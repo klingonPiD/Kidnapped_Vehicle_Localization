@@ -24,8 +24,6 @@ void ParticleFilter::init(double x, double y, double theta, double std[]) {
 	std::normal_distribution<double> dist_y(y, std[1]);
 	std::normal_distribution<double> dist_theta(theta, std[2]);
 
-
-	//Todo: What val for num particles? Also add random gaussian noise to each particle
 	num_particles = 100;
 	for(int i=0; i<num_particles; i++)
 	{
@@ -72,7 +70,6 @@ void ParticleFilter::prediction(double delta_t, double std_pos[], double velocit
 			new_theta = particle.theta;
 		}
 		
-		//Todo add noise
 		particles[i].x = new_x + dist_x(gen);
 		particles[i].y = new_y + dist_y(gen);
 		particles[i].theta = new_theta + dist_theta(gen);
@@ -93,11 +90,15 @@ void ParticleFilter::dataAssociation(std::vector<LandmarkObs> predicted, std::ve
 		for (int j = 0; j<predicted.size(); j++)
 		{
 			LandmarkObs pred = predicted[j];
-			double dist_i_j = dist(pred.x, pred.y, obs.x, obs.y);
-			if (dist_i_j < min_dist)
+			//Only consider landmarks within sensor range
+			if (pred.id != -1)
 			{
-				observations[i].id = pred.id;
-				min_dist = dist_i_j;
+				double dist_i_j = dist(pred.x, pred.y, obs.x, obs.y);
+				if (dist_i_j < min_dist)
+				{
+					observations[i].id = pred.id;
+					min_dist = dist_i_j;
+				}
 			}
 
 		}
@@ -119,21 +120,33 @@ void ParticleFilter::updateWeights(double sensor_range, double std_landmark[],
 	//   for the fact that the map's y-axis actually points downwards.)
 	//   http://planning.cs.uiuc.edu/node99.html
 	
-	//first create landmark format for map landmarks
-	std::vector<LandmarkObs> map_data;
-	for (int i = 0; i<map_landmarks.landmark_list.size(); i++)
-	{
-		LandmarkObs lmark;
-		lmark.id = map_landmarks.landmark_list[i].id_i;
-		lmark.x = map_landmarks.landmark_list[i].x_f;
-		lmark.y = map_landmarks.landmark_list[i].y_f;
-		map_data.push_back(lmark);
-	}
-
+	weights.clear();
+	weights_sum = 0.0;
 	//Go through each particle and update weights
 	for (int i = 0; i < num_particles; i++)
 	{
 		Particle particle = particles[i];
+
+		//Use sensor range to get the landmarks within range
+		//mapdata resize for efficient lookuo
+		LandmarkObs defaultLandmark;
+		defaultLandmark.id = -1;
+		map_data.resize(42, defaultLandmark);
+		for (int j = 0; j < map_landmarks.landmark_list.size(); j++)
+		{
+			LandmarkObs lmark;
+			lmark.id = map_landmarks.landmark_list[j].id_i;
+			lmark.x = map_landmarks.landmark_list[j].x_f;
+			lmark.y = map_landmarks.landmark_list[j].y_f;
+			double dist_obs_pred = dist(lmark.x, lmark.y, particle.x, particle.y);
+			if(dist_obs_pred <= sensor_range)
+			{
+				//map_data.push_back(lmark);
+				map_data[lmark.id - 1] = lmark;//-1 since id goes from 1 to 42 and arr index is 0 to 41
+			}
+
+		}
+
 		//Create vector of observations in map co-ordinates
 		std::vector<LandmarkObs> map_observations;
 		//Transform observation to map coordinate system
@@ -144,13 +157,15 @@ void ParticleFilter::updateWeights(double sensor_range, double std_landmark[],
 			LandmarkObs obs_map;
 			obs_map.x = cos(particle.theta)*obs.x - sin(particle.theta)*obs.y + particle.x;
 			obs_map.y = sin(particle.theta)*obs.x + cos(particle.theta)*obs.y + particle.y;
-			obs_map.id = obs.id;
+			obs_map.id = -1;// obs.id; Using -1 to indicate to check for unassigned state later
 			map_observations.push_back(obs_map);
 		}
 		//do the data association for the observations
 		dataAssociation(map_data, map_observations);
 		//Compute particle weight
 		particles[i].weight *= computeMultiVariateGaussian(map_observations, map_data, std_landmark);
+		weights.push_back(particles[i].weight);
+		weights_sum += particles[i].weight;
 	}
 
 }
@@ -166,21 +181,15 @@ double ParticleFilter::computeMultiVariateGaussian(std::vector<LandmarkObs> map_
 	for(int i=0; i<map_observations.size(); i++)
 	{
 		LandmarkObs map_obs = map_observations[i];
-		// first lookup the correspnding landmark
-		/*LandmarkObs lmark;
-		int j = 0;
-		while(j < landmarks.size())
+		
+		//check to verify if map_obs id is meaningful before you do indexing
+		if (map_obs.id == -1 || landmarks[map_obs.id - 1].id == -1)
 		{
-			int lmarkId = landmarks[j].id;
-			if(map_obs.id == lmarkId)
-			{
-				break;
-			}
-			j++;
-		}*/
-
-		//todo: check to verify if map_obs id is meaningful before you do indexing
+			std::cout << "Error in association logic";
+		}
 		LandmarkObs lmark = landmarks[map_obs.id - 1]; //note -1 because id starts from 1
+		
+		
 		//compute prob
 		double num1 = ((map_obs.x - lmark.x) * (map_obs.x - lmark.x)) / (2 * std_landmarks[0] * std_landmarks[0]);
 		double num2 = ((map_obs.y - lmark.y) * (map_obs.y - lmark.y)) / (2 * std_landmarks[1] * std_landmarks[1]);
@@ -197,25 +206,16 @@ void ParticleFilter::resample() {
 	// NOTE: You may find std::discrete_distribution helpful here.
 	//   http://en.cppreference.com/w/cpp/numeric/random/discrete_distribution
 	std::default_random_engine generator;
-	std::vector<double> weights;
-
-	double weightsSum = 0.0;
-	for(int i=0; i<num_particles; i++)
-	{
-		double wt = particles[i].weight;
-		weightsSum += wt;
-		weights.push_back(wt);
-	}
-
-	//Normalize the weights
+	
+	//Normalize the weights?
 	//Do not normalize if weights sum is too small
-	if (weightsSum > 0.1)
+	/*if (weights_sum > 0.1)
 	{
 		for (int i = 0; i < num_particles; i++)
 		{
-			weights[i] = weights[i] / weightsSum;
+			weights[i] = weights[i] / weights_sum;
 		}
-	}
+	}*/
 
 	std::discrete_distribution<int> distribution(weights.begin(), weights.end());
 	std::vector<Particle> newParticles;

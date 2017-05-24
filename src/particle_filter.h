@@ -27,13 +27,16 @@ class ParticleFilter {
 	// Number of particles to draw
 	int num_particles; 
 	
-	
-	
 	// Flag, if filter is initialized
 	bool is_initialized;
 	
 	// Vector of weights of all particles
 	std::vector<double> weights;
+
+	//Additional
+	std::vector<LandmarkObs> map_data;
+	bool map_initialized = false;
+	double weights_sum = 0.0;
 	
 public:
 	
